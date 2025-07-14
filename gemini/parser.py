@@ -3,6 +3,7 @@ import time
 import logging
 import io
 import csv
+import threading
 from typing import List, Dict
 from google import genai
 from dotenv import load_dotenv
@@ -25,16 +26,17 @@ if not API_KEY:
     raise RuntimeError("Missing GOOGLE_API_KEY")
 client = genai.Client(api_key=API_KEY)
 
-MODEL = "gemini-2.5-flash"
+MODEL        = "gemini-2.5-flash"
 MAX_RETRIES  = 1          # additional tries after the first
 RETRY_DELAY  = 2          # seconds between retries
 
 # ---------------------------------------------------------------------
-# Rate-limit (calls per minute)
+# Rate-limit (calls per minute) — thread-safe
 # ---------------------------------------------------------------------
-CPM          = int(os.getenv("GEMINI_CPM", "30"))
-MIN_INTERVAL = 60.0 / CPM
-_last_call   = 0.0
+CPM           = int(os.getenv("GEMINI_CPM", "30"))
+MIN_INTERVAL  = 60.0 / CPM
+_last_call    = 0.0
+_rate_lock    = threading.Lock()
 
 # ---------------------------------------------------------------------
 # CSV fields and prompt
@@ -52,10 +54,10 @@ IMPORTANT:
 - Include all 15 fields in this exact order on a single line:
   1. title (this is the title of the job and this is a required, if the title contains a comma then you have to enclose the whole title in " " for example "Manager, Direct Tax (Indian Tax))
   2. company (this is the company which posted the job listing, this is required)
-  3. city (this is the city in which the job is required)
+  3. city (this is the city in which the job is required, you can't leave this empty)
   4. country(this is the country in which the job city exists, if the country is not given then you can just put the country name based on your understanding i.e if the city name is Bangalore then you know the country will be India and so on)
   5. officeType (choose only one from these four options: Remote, Hybrid, In-Office, Remote-Anywhere, if not mentioned in the job description then choose Hybrid as default) 
-  6. experienceLevel (choose any one from these six options: Intern, Entry-Level, Associate/Mid-Level, Senior-Level, Managerial, Executive, if not mentioned in the job then try to deduce on your based on the number of years the job description is asking for the job)
+  6. experienceLevel (choose any one from these six options: Intern, Entry-Level, Associate/Mid-Level, Senior-Level, Managerial, Executive, if not mentioned in the job then try to deduce on your based on the number of years the job description is asking for the job, like if the experience required is 0-2 years then it should be tagged as an Entry-Level job)
   7. employmentType (choose only one from these five options: Full-Time, Part-Time, Contract, Freelance, Temporary, if not mentioned in the job description then choose Full-Time as default)
   8. industries (list maximum 3 items and minimum one based on the job description; if containing commas, enclose in double quotes, for example if you deduce that a job comes in both Tech and Finance industry then you should return "Tech, Finance" and if you deduce that a role is simply a role in Tech industry then you should return Tech without any quotes. if it is not mentioned in the job description then try to deduce it by looking at the job description.)
   9. visa (Yes or No, either answer with a Yes or answer with a No, if you can't make sense of it from the job description then you can just choose No as a default)
@@ -75,6 +77,7 @@ AI Intern,Cognizant,Kolkata,India,Hybrid,Intern,Full-Time,"Tech,Consulting",,"He
 Job Description:
 {description}
 """
+
 
 # ---------------------------------------------------------------------
 # Fallback
@@ -96,25 +99,28 @@ def parse_batch(texts: List[str], urls: List[str], jis: List[int]) -> List[Dict]
     if not (len(texts) == len(urls) == len(jis)):
         raise ValueError("texts, urls and jis must be same length")
 
-    # Build prompt once
+    global _last_call          # <-- moved here (declared before first use)
+
     combined_prompt = "\n---\n".join(
         PROMPT_TEMPLATE.format(description=d) for d in texts
     )
     expected_fields = len(FIELDS) + 1  # +1 for j/i
 
     for attempt in range(MAX_RETRIES + 1):
-        # ------- Rate-limit -------
-        global _last_call
-        now = time.time()
-        if now - _last_call < MIN_INTERVAL:
-            wait = MIN_INTERVAL - (now - _last_call)
-            logger.info(f"Throttling Gemini for {wait:.2f}s to respect {CPM} CPM")
-            time.sleep(wait)
-        _last_call = time.time()
+        # ---------- Rate-limit (thread-safe) ----------
+        with _rate_lock:
+            now   = time.time()
+            delta = now - _last_call
+            if delta < MIN_INTERVAL:
+                wait = MIN_INTERVAL - delta
+                logger.info(f"Throttling Gemini for {wait:.2f}s to respect {CPM} CPM")
+                time.sleep(wait)
+            _last_call = time.time()
+        # ---------- End rate-limit section ----------
 
         try:
             logger.info(f"Gemini call attempt {attempt+1}")
-            resp = client.models.generate_content(
+            resp    = client.models.generate_content(
                 model=MODEL,
                 contents=combined_prompt
             )
@@ -126,12 +132,12 @@ def parse_batch(texts: List[str], urls: List[str], jis: List[int]) -> List[Dict]
                 continue
             return _stub_parse_batch()
 
-        # ------- Parse returned lines -------
         valid_records: List[Dict] = []
         lines = [l for l in content.splitlines() if l.strip()]
 
         if len(lines) == 0:
             logger.warning("Gemini returned 0 lines")
+
         for idx, (line, url, ji) in enumerate(zip(lines, urls, jis)):
             try:
                 parts = next(csv.reader(io.StringIO(line)))
@@ -144,14 +150,11 @@ def parse_batch(texts: List[str], urls: List[str], jis: List[int]) -> List[Dict]
             except Exception as e:
                 logger.warning(f"Line {idx+1} malformed → skipped ({e})")
 
-        # If we salvaged at least one row, return them
-        if valid_records:
+        if valid_records:           # at least one good row
             return valid_records
 
-        # Otherwise retry (if attempts remain)
         logger.warning("All rows malformed; retrying…")
         if attempt < MAX_RETRIES:
             time.sleep(RETRY_DELAY)
 
-    # Exhausted retries, give up
     return _stub_parse_batch()

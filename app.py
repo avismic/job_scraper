@@ -5,19 +5,21 @@ print("Exists scraper/static_scraper.py?", os.path.exists("scraper/static_scrape
 import requests
 from scraper.schema_extractor import extract_jobposting_schema
 
+# (kept exactly as before — relies on external context)
 resp = requests.get(url, timeout=10)
 html = resp.text
 schema_rec = extract_jobposting_schema(url, html)
 
 import csv
-import sys
-import os
+from concurrent.futures import ThreadPoolExecutor, as_completed  # ➜ added
 from scraper.static_scraper import scrape
 from gemini.parser import parse_batch
 from utils.validators import validate_record
 
-BATCH_SIZE = 10
-TEMP_TXT = 'data/temp_output.txt'
+BATCH_SIZE   = 10
+MAX_WORKERS  = 10                     # ➜ parallel Gemini calls
+TEMP_TXT     = 'data/temp_output.txt'
+
 
 def read_urls(input_csv):
     urls = []
@@ -30,18 +32,20 @@ def read_urls(input_csv):
             urls.append(row['url'])
     return urls
 
+
 def append_to_txt(lines):
     os.makedirs(os.path.dirname(TEMP_TXT), exist_ok=True)
-    mode = 'w' if not os.path.exists(TEMP_TXT) else 'a'
+    mode = 'a' if os.path.exists(TEMP_TXT) else 'w'
     with open(TEMP_TXT, mode, encoding='utf-8') as f:
         for line in lines:
             f.write(line.strip() + '\n')
 
+
 def records_to_csv(records, output_csv):
     fieldnames = [
-        'title','company','city','country','officeType','experienceLevel',
-        'employmentType','industries','visa','benefits','skills','url','j/i',
-        'currency','salaryLow','salaryHigh'
+        'title', 'company', 'city', 'country', 'officeType', 'experienceLevel',
+        'employmentType', 'industries', 'visa', 'benefits', 'skills', 'url', 'j/i',
+        'currency', 'salaryLow', 'salaryHigh'
     ]
     write_header = not os.path.exists(output_csv)
     with open(output_csv, 'a', newline='', encoding='utf-8') as f:
@@ -51,50 +55,64 @@ def records_to_csv(records, output_csv):
         for rec in records:
             writer.writerow(rec)
 
+
 def main():
     if len(sys.argv) != 3:
         print("Usage: python app.py input.csv output.csv")
         sys.exit(1)
     input_csv, output_csv = sys.argv[1], sys.argv[2]
-    urls = read_urls(input_csv)
-    batch = []
+
+    urls     = read_urls(input_csv)
+    batch    = []
+    futures  = []
+
+    executor = ThreadPoolExecutor(max_workers=MAX_WORKERS)  # ➜ added
 
     for idx, url in enumerate(urls, start=1):
         print(f"[{idx}/{len(urls)}] Scraping {url}...")
         try:
             text = scrape(url)
         except Exception as e:
-            # <-- catch any network/parse errors and continue
             print(f"  ⚠️ Warning: could not scrape {url}: {e}")
             text = ""
 
         batch.append({'text': text, 'url': url, 'j/i': idx})
 
-        # once we hit BATCH_SIZE or the last URL, send to Gemini stub
-        if len(batch) == BATCH_SIZE or idx == len(urls):
-            print(f"Parsing batch of {len(batch)} with stubbed Gemini...")
+        # when batch fills, submit Gemini call in background
+        if len(batch) == BATCH_SIZE:
             texts = [b['text'] for b in batch]
-            urls_b = [b['url']   for b in batch]
-            jis    = [b['j/i']   for b in batch]
+            urls_b = [b['url'] for b in batch]
+            jis   = [b['j/i'] for b in batch]
 
-            parsed = parse_batch(texts, urls_b, jis)
-            clean  = [validate_record(rec) for rec in parsed]
-
-            # write raw CSV lines to temp txt
-            lines = [
-                ','.join(str(clean_rec[field]) for field in clean_rec.keys())
-                for clean_rec in clean
-            ]
-            append_to_txt(lines)
-
-            # write validated records to final CSV
-            records_to_csv(clean, output_csv)
-
+            fut = executor.submit(parse_batch, texts, urls_b, jis)  # ➜ added
+            futures.append(fut)
             batch = []
+
+    # submit remaining partial batch
+    if batch:
+        texts = [b['text'] for b in batch]
+        urls_b = [b['url'] for b in batch]
+        jis   = [b['j/i'] for b in batch]
+        futures.append(executor.submit(parse_batch, texts, urls_b, jis))
+
+    # collect finished Gemini calls
+    for fut in as_completed(futures):                                 # ➜ added
+        parsed  = fut.result()
+        cleaned = [validate_record(r) for r in parsed]
+
+        lines = [
+            ','.join(str(clean_rec[field]) for field in cleaned_rec.keys())
+            for cleaned_rec in cleaned
+        ]
+        append_to_txt(lines)
+        records_to_csv(cleaned, output_csv)
+
+    executor.shutdown(wait=True)  # ➜ added
 
     print(f"\n✅ Done.")
     print(f"  • Final CSV → {output_csv}")
     print(f"  • Raw batches → {TEMP_TXT}")
+
 
 if __name__ == '__main__':
     main()
