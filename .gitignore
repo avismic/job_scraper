@@ -1,1 +1,22 @@
-.env*
+# ─── Virtual-environment folders ───────────────────────────────
+.env/          # pipenv / venv can land here
+venv/
+env/
+ENV/
+.venv/
+
+# ─── Dotenv secrets ────────────────────────────────────────────
+.env           # default dotenv file (never commit secrets!)
+.env.*         # e.g. .env.prod, .env.local
+
+# ─── Python byte-code & build artefacts ────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+build/
+dist/
+*.egg-info/
+
+# ─── IDE / editor settings (optional but handy) ────────────────
+.vscode/
+.idea/
