@@ -16,7 +16,7 @@ from scraper.static_scraper import scrape
 from gemini.parser import parse_batch
 from utils.validators import validate_record
 
-BATCH_SIZE = 5
+BATCH_SIZE = 10
 TEMP_TXT = 'data/temp_output.txt'
 
 def read_urls(input_csv):

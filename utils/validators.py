@@ -2,7 +2,7 @@
 
 from difflib import get_close_matches
 
-# Allowed value sets for strict fields
+# Allowed value sets
 ALLOWED = {
     'officeType': [
         'Remote',
@@ -40,26 +40,13 @@ ALLOWED = {
 }
 
 def normalize_choice(val: str, choices: list[str], default: str = None) -> str:
-    """
-    Fuzzy-match a single value to the allowed choices.
-    """
     v = val.strip()
     if v in choices:
         return v
     matches = get_close_matches(v, choices, n=1, cutoff=0.6)
-    if matches:
-        return matches[0]
-    return default or choices[0]
+    return matches[0] if matches else (default or choices[0])
 
 def normalize_list(val: str, choices: list[str], max_items: int = None) -> str:
-    """
-    Normalize a comma-separated list of values:
-    - Strip whitespace
-    - Fuzzy-match each to allowed choices
-    - Deduplicate, preserving order
-    - Truncate to max_items if provided
-    Returns a comma-separated string of the normalized items.
-    """
     items = [v.strip() for v in val.split(',') if v.strip()]
     normalized = []
     for item in items:
@@ -71,60 +58,36 @@ def normalize_list(val: str, choices: list[str], max_items: int = None) -> str:
     return ','.join(normalized)
 
 def validate_record(rec: dict) -> dict:
-    """
-    Apply normalization rules to a parsed record.
-    Fields not present are left as-is (or set to '').
-    """
     # officeType
     rec['officeType'] = normalize_choice(
-        rec.get('officeType', ''),
-        ALLOWED['officeType'],
-        default=''
+        rec.get('officeType', ''), ALLOWED['officeType'], default=''
     )
-
     # experienceLevel
     rec['experienceLevel'] = normalize_choice(
-        rec.get('experienceLevel', ''),
-        ALLOWED['experienceLevel'],
-        default=''
+        rec.get('experienceLevel', ''), ALLOWED['experienceLevel'], default=''
     )
-
     # employmentType
     rec['employmentType'] = normalize_choice(
-        rec.get('employmentType', ''),
-        ALLOWED['employmentType'],
-        default=''
+        rec.get('employmentType', ''), ALLOWED['employmentType'], default=''
     )
-
-    # industries (no minimum, no padding)
+    # industries
     rec['industries'] = normalize_list(
-        rec.get('industries', ''),
-        ALLOWED['industries'],
-        max_items=None
+        rec.get('industries', ''), ALLOWED['industries']
     )
-
-    # visa (default to 'No' if missing or unrecognized)
+    # visa (default to 'No')
     rec['visa'] = normalize_choice(
-        rec.get('visa', ''),
-        ALLOWED['visa'],
-        default='No'
+        rec.get('visa', ''), ALLOWED['visa'], default='No'
     )
-
-    # currency → keep only first character (symbol)
+    # currency → symbol only
     cur = rec.get('currency', '').strip()
     rec['currency'] = cur[0] if cur else ''
-
-    # salary fields left as-is (assume numeric/empty)
-
-    # benefits → leave as-is (comma-separated list)
+    # benefits → trimmed
     rec['benefits'] = rec.get('benefits', '').strip()
-
-    # skills (no minimum, no padding)
+    # skills → dedupe list
     skills = [s.strip() for s in rec.get('skills', '').split(',') if s.strip()]
     seen = []
     for s in skills:
         if s not in seen:
             seen.append(s)
     rec['skills'] = ','.join(seen)
-
     return rec

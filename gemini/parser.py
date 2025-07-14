@@ -8,36 +8,44 @@ from google import genai
 from dotenv import load_dotenv
 from pathlib import Path
 
-
+# ---------------------------------------------------------------------
+# .env + logging
+# ---------------------------------------------------------------------
 env_path = Path(__file__).parent.parent / ".env"
 load_dotenv(dotenv_path=env_path)
 
-# Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Load API key from environment
+# ---------------------------------------------------------------------
+# Gemini client
+# ---------------------------------------------------------------------
 API_KEY = os.getenv("GOOGLE_API_KEY")
 if not API_KEY:
-    raise RuntimeError("Missing GOOGLE_API_KEY environment variable")
-
-# Initialize Gemini client
+    raise RuntimeError("Missing GOOGLE_API_KEY")
 client = genai.Client(api_key=API_KEY)
 
-# Model settings
-MODEL = "gemini-2.0-flash"
-MAX_RETRIES = 1
-RETRY_DELAY = 2  # seconds between retries
+MODEL = "gemini-2.5-flash"
+MAX_RETRIES  = 1          # additional tries after the first
+RETRY_DELAY  = 2          # seconds between retries
 
-# Fields to extract (in order)
+# ---------------------------------------------------------------------
+# Rate-limit (calls per minute)
+# ---------------------------------------------------------------------
+CPM          = int(os.getenv("GEMINI_CPM", "30"))
+MIN_INTERVAL = 60.0 / CPM
+_last_call   = 0.0
+
+# ---------------------------------------------------------------------
+# CSV fields and prompt
+# ---------------------------------------------------------------------
 FIELDS = [
-    'title', 'company', 'city', 'country',
-    'officeType', 'experienceLevel', 'employmentType',
-    'industries', 'visa', 'benefits', 'skills',
-    'currency', 'salaryLow', 'salaryHigh'
+    'title','company','city','country',
+    'officeType','experienceLevel','employmentType',
+    'industries','visa','benefits','skills',
+    'currency','salaryLow','salaryHigh'
 ]
 
-# Prompt template for each job description
 PROMPT_TEMPLATE = """
 IMPORTANT:
 - Provide exactly one line of valid CSV per job. Do not output any additional lines or separators.
@@ -68,91 +76,82 @@ Job Description:
 {description}
 """
 
+# ---------------------------------------------------------------------
+# Fallback
+# ---------------------------------------------------------------------
+def _stub_parse_batch() -> List[Dict]:
+    """Return empty list instead of dummy placeholders."""
+    return []
 
-def _stub_parse_batch(texts: List[str], urls: List[str], jis: List[int]) -> List[Dict]:
-    """
-    Fallback stub: returns dummy records when parsing fails.
-    """
-    records = []
-    for text, url, ji in zip(texts, urls, jis):
-        rec = {field: '' for field in FIELDS}
-        rec.update({
-            'title': 'Dummy Title',
-            'company': 'Dummy Company',
-            'city': 'Dummy City',
-            'country': 'Dummy Country',
-            'officeType': 'Remote',
-            'experienceLevel': 'Entry-Level',
-            'employmentType': 'Full-Time',
-            'industries': 'Tech,Healthcare,Marketing',
-            'visa': 'Yes',
-            'benefits': '',
-            'skills': '',
-            'currency': '$',
-            'salaryLow': '50000',
-            'salaryHigh': '60000'
-        })
-        rec['url'] = url
-        exp_level = rec.get('experienceLevel', '')
-        rec['j/i'] = 'i' if exp_level.lower().startswith('intern') else 'j'
-        records.append(rec)
-    return records
-
-
+# ---------------------------------------------------------------------
+# Main function
+# ---------------------------------------------------------------------
 def parse_batch(texts: List[str], urls: List[str], jis: List[int]) -> List[Dict]:
     """
-    Parse job descriptions via Gemini Flash API into structured records.
-    Falls back to stub on errors or format mismatches.
+    • Sends a batch to Gemini.
+    • Parses each CSV line individually.
+    • Keeps well-formed rows; skips malformed ones.
+    • Retries once on API error or if zero rows were valid.
     """
     if not (len(texts) == len(urls) == len(jis)):
-        raise ValueError("texts, urls, and jis must have the same length")
+        raise ValueError("texts, urls and jis must be same length")
 
-    # Build combined prompt
-    prompts = [PROMPT_TEMPLATE.format(description=desc) for desc in texts]
-    combined_prompt = "\n---\n".join(prompts)
+    # Build prompt once
+    combined_prompt = "\n---\n".join(
+        PROMPT_TEMPLATE.format(description=d) for d in texts
+    )
+    expected_fields = len(FIELDS) + 1  # +1 for j/i
 
-    # Call Gemini with retries
     for attempt in range(MAX_RETRIES + 1):
+        # ------- Rate-limit -------
+        global _last_call
+        now = time.time()
+        if now - _last_call < MIN_INTERVAL:
+            wait = MIN_INTERVAL - (now - _last_call)
+            logger.info(f"Throttling Gemini for {wait:.2f}s to respect {CPM} CPM")
+            time.sleep(wait)
+        _last_call = time.time()
+
         try:
-            logger.info(f"Sending request to Gemini (attempt {attempt+1})")
-            response = client.models.generate_content(
+            logger.info(f"Gemini call attempt {attempt+1}")
+            resp = client.models.generate_content(
                 model=MODEL,
                 contents=combined_prompt
             )
-            content = response.text.strip()
-            logger.info("Raw Gemini response:\n%s", content)
-            break
+            content = resp.text.strip()
         except Exception as e:
-            logger.warning(f"Gemini request failed: {e}")
+            logger.warning(f"Gemini API error: {e}")
             if attempt < MAX_RETRIES:
                 time.sleep(RETRY_DELAY)
                 continue
-            logger.error("Max retries reached. Using stub parser.")
-            return _stub_parse_batch(texts, urls, jis)
+            return _stub_parse_batch()
 
-    # Process output lines
-    lines = [l for l in content.splitlines() if l.strip()]
-    records: List[Dict] = []
-    expected_fields = len(FIELDS) + 1  # +1 for j/i
+        # ------- Parse returned lines -------
+        valid_records: List[Dict] = []
+        lines = [l for l in content.splitlines() if l.strip()]
 
-    for idx, (line, url, ji_idx) in enumerate(zip(lines, urls, jis)):
-        # Parse CSV respecting quotes
-        try:
-            parts = next(csv.reader(io.StringIO(line)))
-        except Exception as e:
-            logger.warning(f"CSV parse failed on line {idx+1}: {e}")
-            return _stub_parse_batch(texts, urls, jis)
+        if len(lines) == 0:
+            logger.warning("Gemini returned 0 lines")
+        for idx, (line, url, ji) in enumerate(zip(lines, urls, jis)):
+            try:
+                parts = next(csv.reader(io.StringIO(line)))
+                if len(parts) != expected_fields:
+                    raise ValueError(f"{len(parts)} fields (need {expected_fields})")
+                rec = {field: parts[i] for i, field in enumerate(FIELDS)}
+                rec['url'] = url
+                rec['j/i'] = parts[-1]
+                valid_records.append(rec)
+            except Exception as e:
+                logger.warning(f"Line {idx+1} malformed → skipped ({e})")
 
-        if len(parts) < expected_fields:
-            logger.warning(f"Line {idx+1} has {len(parts)} fields (< expected {expected_fields}): {parts}")
-            return _stub_parse_batch(texts, urls, jis)
-        if len(parts) > expected_fields:
-            logger.warning(f"Line {idx+1} has {len(parts)} fields (> expected {expected_fields}); extra fields will be ignored: {parts}")
+        # If we salvaged at least one row, return them
+        if valid_records:
+            return valid_records
 
-        # Map fields to values (ignore extras)
-        rec: Dict[str, str] = {field: parts[i] for i, field in enumerate(FIELDS)}
-        rec['url'] = url
-        rec['j/i'] = parts[expected_fields - 1]
-        records.append(rec)
+        # Otherwise retry (if attempts remain)
+        logger.warning("All rows malformed; retrying…")
+        if attempt < MAX_RETRIES:
+            time.sleep(RETRY_DELAY)
 
-    return records
+    # Exhausted retries, give up
+    return _stub_parse_batch()

@@ -18,7 +18,7 @@ from gemini.parser import parse_batch
 from utils.validators import validate_record
 
 # Constants
-BATCH_SIZE = 5
+BATCH_SIZE = 10
 
 st.set_page_config(page_title="Job Scraper", layout="wide")
 st.title("🧾 Career Page Job Scraper")
