@@ -23,7 +23,7 @@ An intelligent job scraper that uses Google's Gemini Pro to parse unstructured j
 
 The web interface allows you to easily input a careers page or upload a CSV to start the scraping process.
 
-![Streamlit App Demo](https://drive.google.com/file/d/1kU9hsMVnioX3LRwZMuNmaJlxe1_qu3ZU/view?usp=sharing)
+![Streamlit App Demo](./images/screens.jpeg)
 
 ---
 
