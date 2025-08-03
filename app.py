@@ -5,21 +5,19 @@ print("Exists scraper/static_scraper.py?", os.path.exists("scraper/static_scrape
 import requests
 from scraper.schema_extractor import extract_jobposting_schema
 
-# (kept exactly as before — relies on external context)
 resp = requests.get(url, timeout=10)
 html = resp.text
 schema_rec = extract_jobposting_schema(url, html)
 
 import csv
-from concurrent.futures import ThreadPoolExecutor, as_completed  # ➜ added
+from concurrent.futures import ThreadPoolExecutor, as_completed 
 from scraper.static_scraper import scrape
 from gemini.parser import parse_batch
 from utils.validators import validate_record
 
 BATCH_SIZE   = 10
-MAX_WORKERS  = 10                     # ➜ parallel Gemini calls
+MAX_WORKERS  = 10                    
 TEMP_TXT     = 'data/temp_output.txt'
-
 
 def read_urls(input_csv):
     urls = []
@@ -66,7 +64,7 @@ def main():
     batch    = []
     futures  = []
 
-    executor = ThreadPoolExecutor(max_workers=MAX_WORKERS)  # ➜ added
+    executor = ThreadPoolExecutor(max_workers=MAX_WORKERS) 
 
     for idx, url in enumerate(urls, start=1):
         print(f"[{idx}/{len(urls)}] Scraping {url}...")
@@ -75,28 +73,24 @@ def main():
         except Exception as e:
             print(f"  ⚠️ Warning: could not scrape {url}: {e}")
             text = ""
-
         batch.append({'text': text, 'url': url, 'j/i': idx})
 
-        # when batch fills, submit Gemini call in background
         if len(batch) == BATCH_SIZE:
             texts = [b['text'] for b in batch]
             urls_b = [b['url'] for b in batch]
             jis   = [b['j/i'] for b in batch]
 
-            fut = executor.submit(parse_batch, texts, urls_b, jis)  # ➜ added
+            fut = executor.submit(parse_batch, texts, urls_b, jis) 
             futures.append(fut)
             batch = []
 
-    # submit remaining partial batch
     if batch:
         texts = [b['text'] for b in batch]
         urls_b = [b['url'] for b in batch]
         jis   = [b['j/i'] for b in batch]
         futures.append(executor.submit(parse_batch, texts, urls_b, jis))
 
-    # collect finished Gemini calls
-    for fut in as_completed(futures):                                 # ➜ added
+    for fut in as_completed(futures):                                
         parsed  = fut.result()
         cleaned = [validate_record(r) for r in parsed]
 
@@ -107,7 +101,7 @@ def main():
         append_to_txt(lines)
         records_to_csv(cleaned, output_csv)
 
-    executor.shutdown(wait=True)  # ➜ added
+    executor.shutdown(wait=True)  
 
     print(f"\n✅ Done.")
     print(f"  • Final CSV → {output_csv}")

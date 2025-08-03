@@ -9,38 +9,26 @@ from google import genai
 from dotenv import load_dotenv
 from pathlib import Path
 
-# ---------------------------------------------------------------------
-# .env + logging
-# ---------------------------------------------------------------------
 env_path = Path(__file__).parent.parent / ".env"
 load_dotenv(dotenv_path=env_path)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------
-# Gemini client
-# ---------------------------------------------------------------------
 API_KEY = os.getenv("GOOGLE_API_KEY")
 if not API_KEY:
     raise RuntimeError("Missing GOOGLE_API_KEY")
 client = genai.Client(api_key=API_KEY)
 
 MODEL        = "gemini-2.5-flash"
-MAX_RETRIES  = 1          # additional tries after the first
-RETRY_DELAY  = 2          # seconds between retries
+MAX_RETRIES  = 1          
+RETRY_DELAY  = 2          
 
-# ---------------------------------------------------------------------
-# Rate-limit (calls per minute) — thread-safe
-# ---------------------------------------------------------------------
 CPM           = int(os.getenv("GEMINI_CPM", "30"))
 MIN_INTERVAL  = 60.0 / CPM
 _last_call    = 0.0
 _rate_lock    = threading.Lock()
 
-# ---------------------------------------------------------------------
-# CSV fields and prompt
-# ---------------------------------------------------------------------
 FIELDS = [
     'title','company','city','country',
     'officeType','experienceLevel','employmentType',
@@ -77,18 +65,10 @@ AI Intern,Cognizant,Kolkata,India,Hybrid,Intern,Full-Time,"Tech,Consulting",,"He
 Job Description:
 {description}
 """
-
-
-# ---------------------------------------------------------------------
-# Fallback
-# ---------------------------------------------------------------------
 def _stub_parse_batch() -> List[Dict]:
     """Return empty list instead of dummy placeholders."""
     return []
 
-# ---------------------------------------------------------------------
-# Main function
-# ---------------------------------------------------------------------
 def parse_batch(texts: List[str], urls: List[str], jis: List[int]) -> List[Dict]:
     """
     • Sends a batch to Gemini.
@@ -99,15 +79,14 @@ def parse_batch(texts: List[str], urls: List[str], jis: List[int]) -> List[Dict]
     if not (len(texts) == len(urls) == len(jis)):
         raise ValueError("texts, urls and jis must be same length")
 
-    global _last_call          # <-- moved here (declared before first use)
+    global _last_call       
 
     combined_prompt = "\n---\n".join(
         PROMPT_TEMPLATE.format(description=d) for d in texts
     )
-    expected_fields = len(FIELDS) + 1  # +1 for j/i
+    expected_fields = len(FIELDS) + 1  
 
     for attempt in range(MAX_RETRIES + 1):
-        # ---------- Rate-limit (thread-safe) ----------
         with _rate_lock:
             now   = time.time()
             delta = now - _last_call
@@ -116,7 +95,6 @@ def parse_batch(texts: List[str], urls: List[str], jis: List[int]) -> List[Dict]
                 logger.info(f"Throttling Gemini for {wait:.2f}s to respect {CPM} CPM")
                 time.sleep(wait)
             _last_call = time.time()
-        # ---------- End rate-limit section ----------
 
         try:
             logger.info(f"Gemini call attempt {attempt+1}")
@@ -150,7 +128,7 @@ def parse_batch(texts: List[str], urls: List[str], jis: List[int]) -> List[Dict]
             except Exception as e:
                 logger.warning(f"Line {idx+1} malformed → skipped ({e})")
 
-        if valid_records:           # at least one good row
+        if valid_records:          
             return valid_records
 
         logger.warning("All rows malformed; retrying…")

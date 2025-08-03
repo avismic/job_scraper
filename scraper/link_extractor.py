@@ -25,7 +25,6 @@ def extract_links(
     job_urls: Set[str] = set()
     page_count = 0
 
-    # patterns for pagination detection
     PAGINATION_TEXT = re.compile(r'^(?:next|>\>|\>|\»|\›)$', re.IGNORECASE)
     PAGINATION_HREF = re.compile(r'page[=/\-]?\d+', re.IGNORECASE)
 
@@ -45,14 +44,12 @@ def extract_links(
 
         soup = BeautifulSoup(resp.text, 'html.parser')
 
-        # 1) Extract any job-like links
         for a in soup.find_all('a', href=True):
             href = a['href']
             if 'job' in href.lower():
                 full = href if href.startswith(('http://', 'https://')) else urljoin(url, href)
                 job_urls.add(full)
 
-        # 2) Discover pagination links
         for a in soup.find_all('a', href=True):
             href = a['href']
             text = a.get_text(strip=True)

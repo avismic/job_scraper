@@ -14,11 +14,9 @@ def scrape(url: str, timeout: int = 30) -> str:
 
     soup = BeautifulSoup(html, 'html.parser')
 
-    # Remove nav/footer
     for tag in soup.find_all(['nav', 'footer']):
         tag.decompose()
 
-    # Prefer <main> or <article>
     container = soup.find(['main', 'article'])
     if container:
         return container.get_text(separator='\n', strip=True)

@@ -17,14 +17,12 @@ from scraper.link_extractor import extract_links
 from gemini.parser import parse_batch
 from utils.validators import validate_record
 
-# ---------- Tunable constants ----------
-BATCH_SIZE   = 10   # how many job descriptions per Gemini call
-MAX_WORKERS  = 10    # how many Gemini calls in parallel  ➜ added
+BATCH_SIZE   = 10  
+MAX_WORKERS  = 10    
 
 st.set_page_config(page_title="Job Scraper", layout="wide")
 st.title("🧾 Career Page Job Scraper")
 
-# --- 1. Collect job-posting URLs ------------------------------------------------
 careers_page = st.text_input(
     "Or enter a main careers page URL to auto-discover all job postings:",
     placeholder="https://www.company.com/careers"
@@ -52,7 +50,6 @@ else:
 
 total = len(urls)
 
-# --- 2. Scrape, batch & parse ---------------------------------------------------
 if st.button("Run Scraper"):
     tmp_txt = tempfile.NamedTemporaryFile(delete=False, suffix=".txt")
     tmp_csv = tempfile.NamedTemporaryFile(delete=False, suffix=".csv")
@@ -71,13 +68,11 @@ if st.button("Run Scraper"):
     progress = st.progress(0.0)
     batch, futures = [], []
 
-    # Thread pool for parallel Gemini calls  ➜ added
     executor = ThreadPoolExecutor(max_workers=MAX_WORKERS)
 
     for idx, url in enumerate(urls, start=1):
         st.write(f"🔍 [{idx}/{total}] Processing {url}")
 
-        # (optional) re-expand links checkbox – unchanged
         if st.checkbox(f"▶️ Expand links on {url}", key=f"expand_{idx}"):
             try:
                 sub_urls = extract_links(url)
@@ -88,7 +83,6 @@ if st.button("Run Scraper"):
         else:
             sub_urls = [url]
 
-        # scrape each job URL
         for u in sub_urls:
             try:
                 text = static_scrape(u)
@@ -99,7 +93,6 @@ if st.button("Run Scraper"):
                 text = ""
             batch.append({'text': text, 'url': u, 'j/i': idx})
 
-            # submit batch to Gemini when full
             if len(batch) == BATCH_SIZE:
                 fut = executor.submit(
                     parse_batch,
@@ -111,7 +104,6 @@ if st.button("Run Scraper"):
                 batch = []
                 progress.progress(min(1.0, idx / total))
 
-    # final partial batch
     if batch:
         fut = executor.submit(
             parse_batch,
@@ -121,7 +113,6 @@ if st.button("Run Scraper"):
         )
         futures.append(fut)
 
-    # gather results as they finish  ➜ added
     completed = 0
     for fut in as_completed(futures):
         recs = fut.result()
@@ -134,7 +125,6 @@ if st.button("Run Scraper"):
     out_f.close()
     executor.shutdown(wait=True)
 
-    # --- 3. Display & Download ---------------------------------------------------
     st.success("✅ Scraping & parsing complete!")
     df_out = pd.read_csv(tmp_csv.name)
     st.dataframe(df_out, use_container_width=True)

@@ -9,7 +9,6 @@ print("🛣️ Python path entries:")
 for p in sys.path:
     print("   ", p)
 
-# Try importing parse_batch
 try:
     from gemini.parser import parse_batch
     print("✅ Imported parse_batch from gemini.parser")
